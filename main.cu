@@ -1,4 +1,4 @@
-#include "launch/tiling_launch.h"
+#include "launch/launch.h"
 
 #include <iostream>
 
@@ -11,6 +11,7 @@ int main(int argc, char** argv) {
 
     if (opt.kernel == "naive") return run_naive(opt);
     if (opt.kernel == "tiled") return run_tiled(opt);
+    if (opt.kernel == "transpose-tiled") return run_transpose_tiled(opt);
     if (opt.kernel == "batch-naive") return run_batch_naive(opt);
     if (opt.kernel == "batch-tiled") return run_batch_tiled(opt);
 

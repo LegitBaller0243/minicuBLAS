@@ -1,6 +1,5 @@
-#include "launch/tiling_launch.h"
-
-#include "kernels/tiling_kernels.cuh"
+#include "launch/launch.h"
+#include "kernels/kernels.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -10,11 +9,75 @@
 #include <string>
 #include <vector>
 
+struct MatmulBuffers {
+    float* h_A = nullptr;
+    float* h_B = nullptr;
+    float* d_A = nullptr;
+    float* d_B = nullptr;
+    float* d_C = nullptr;
+};
+
+static void init_host(float* ptr, size_t elems, float value) {
+    for (size_t i = 0; i < elems; ++i) ptr[i] = value;
+}
+
+static int alloc_and_copy_single(const Options& opt, MatmulBuffers& buf) {
+    const size_t a_elems = static_cast<size_t>(opt.M) * opt.K;
+    const size_t b_elems = static_cast<size_t>(opt.K) * opt.N;
+    const size_t c_elems = static_cast<size_t>(opt.M) * opt.N;
+    const size_t a_bytes = a_elems * sizeof(float);
+    const size_t b_bytes = b_elems * sizeof(float);
+    const size_t c_bytes = c_elems * sizeof(float);
+
+    if (cudaMallocHost(&buf.h_A, a_bytes) != cudaSuccess) return 1;
+    if (cudaMallocHost(&buf.h_B, b_bytes) != cudaSuccess) return 1;
+    init_host(buf.h_A, a_elems, 1.0f);
+    init_host(buf.h_B, b_elems, 1.0f);
+
+    if (cudaMalloc(&buf.d_A, a_bytes) != cudaSuccess) return 1;
+    if (cudaMalloc(&buf.d_B, b_bytes) != cudaSuccess) return 1;
+    if (cudaMalloc(&buf.d_C, c_bytes) != cudaSuccess) return 1;
+    if (cudaMemcpy(buf.d_A, buf.h_A, a_bytes, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
+    if (cudaMemcpy(buf.d_B, buf.h_B, b_bytes, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
+    if (cudaMemset(buf.d_C, 0, c_bytes) != cudaSuccess) return 1;
+    return 0;
+}
+
+static int alloc_and_copy_batched(const Options& opt, MatmulBuffers& buf) {
+    const size_t a_elems = static_cast<size_t>(opt.batch) * opt.M * opt.K;
+    const size_t b_elems = static_cast<size_t>(opt.batch) * opt.K * opt.N;
+    const size_t c_elems = static_cast<size_t>(opt.batch) * opt.M * opt.N;
+    const size_t a_bytes = a_elems * sizeof(float);
+    const size_t b_bytes = b_elems * sizeof(float);
+    const size_t c_bytes = c_elems * sizeof(float);
+
+    if (cudaMallocHost(&buf.h_A, a_bytes) != cudaSuccess) return 1;
+    if (cudaMallocHost(&buf.h_B, b_bytes) != cudaSuccess) return 1;
+    init_host(buf.h_A, a_elems, 1.0f);
+    init_host(buf.h_B, b_elems, 1.0f);
+
+    if (cudaMalloc(&buf.d_A, a_bytes) != cudaSuccess) return 1;
+    if (cudaMalloc(&buf.d_B, b_bytes) != cudaSuccess) return 1;
+    if (cudaMalloc(&buf.d_C, c_bytes) != cudaSuccess) return 1;
+    if (cudaMemcpy(buf.d_A, buf.h_A, a_bytes, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
+    if (cudaMemcpy(buf.d_B, buf.h_B, b_bytes, cudaMemcpyHostToDevice) != cudaSuccess) return 1;
+    if (cudaMemset(buf.d_C, 0, c_bytes) != cudaSuccess) return 1;
+    return 0;
+}
+
+static void free_buffers(MatmulBuffers& buf) {
+    if (buf.d_A) cudaFree(buf.d_A);
+    if (buf.d_B) cudaFree(buf.d_B);
+    if (buf.d_C) cudaFree(buf.d_C);
+    if (buf.h_A) cudaFreeHost(buf.h_A);
+    if (buf.h_B) cudaFreeHost(buf.h_B);
+}
+
 void print_usage(const char* prog) {
     std::cout
         << "Usage: " << prog << " [options]\n"
         << "Options:\n"
-        << "  --kernel naive|tiled|batch-naive|batch-tiled\n"
+        << "  --kernel naive|tiled|transpose-tiled|batch-naive|batch-tiled\n"
         << "  --m <int>    rows of A / C\n"
         << "  --k <int>    cols of A / rows of B\n"
         << "  --n <int>    cols of B / C\n"
@@ -77,41 +140,75 @@ int run_naive(const Options& opt) {
     std::cout << "Running naive: M=" << opt.M << " K=" << opt.K
               << " N=" << opt.N << " repeats=" << opt.repeats << "\n";
 
-    // TODO: Allocate host/device buffers and memcpy (you said you want to do this).
-    float* h_A = malloc(sizeof(float) * opt.M * opt.K);
-    float* h_B = malloc(sizeof(float) * opt.K * opt.N);
+    MatmulBuffers buf{};
+    if (alloc_and_copy_single(opt, buf) != 0) {
+        std::cerr << "Allocation/memcpy failed in run_naive\n";
+        free_buffers(buf);
+        return 1;
+    }
 
-    float *d_A, *d_B, *d_C;
-    cudaMalloc(&d_A, sizeof(float) * opt.M * opt.K);
-    cudaMalloc(&d_B, sizeof(float) * opt.K * opt.N);
-    cudaMalloc(&d_C, sizeof(float) * opt.M * opt.N);
+    dim3 block(blocksize, blocksize);
+    const int tiles_m = (opt.M + blocksize - 1) / blocksize;
+    const int tiles_n = (opt.N + blocksize - 1) / blocksize;
+    dim3 grid(tiles_m * tiles_n);
 
-
-    cudaMemcpy(d_A, A, sizeof(float) * opt.M * opt.K, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, B, sizeof(float) * opt.N * opt.K, cudaMemcpyHostToDevice);
-    // TODO: Compute dim3 block/grid.
-    dim3 block = (blocksize, blocksize);
-    dim3 grid = ((M + blocksize - 1) / blocksize, (N + blocksize - 1) / blocksize);
-    // TODO: Wrap your launch in time_kernel_ms like below.
-    
     float avg_ms = time_kernel_ms(opt.repeats, [&]() {
-        naiveMul<<<grid, block>>>(d_A, d_B, d_C, opt.M, opt.K, opt.N);
+        naiveMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f, 0.0f);
     });
     std::cout << "avg_ms=" << avg_ms << "\n";
 
-    cudaFree(d_A);
-    cudaFree(d_B);
-    cudaFree(d_C);
+    free_buffers(buf);
     return 0;
 }
 
 int run_tiled(const Options& opt) {
-    std::cout << "Running tiled: N=" << opt.N
+    std::cout << "Running tiled: M=" << opt.M << " K=" << opt.K << " N=" << opt.N
               << " repeats=" << opt.repeats << "\n";
 
-    // TODO: Allocate buffers and memcpy for square N x N case.
-    // TODO: Compute dim3 block/grid.
-    // TODO: Use time_kernel_ms around tilingMul<<<...>>>(...)
+    MatmulBuffers buf{};
+    if (alloc_and_copy_single(opt, buf) != 0) {
+        std::cerr << "Allocation/memcpy failed in run_tiled\n";
+        free_buffers(buf);
+        return 1;
+    }
+
+    dim3 block(blocksize, blocksize);
+    const int tiles_m = (opt.M + blocksize - 1) / blocksize;
+    const int tiles_n = (opt.N + blocksize - 1) / blocksize;
+    dim3 grid(tiles_m * tiles_n);
+
+    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+        tilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f, 0.0f);
+    });
+    std::cout << "avg_ms=" << avg_ms << "\n";
+
+    free_buffers(buf);
+    return 0;
+}
+
+int run_transpose_tiled(const Options& opt) {
+    std::cout << "Running transpose-tiled: M=" << opt.M << " K=" << opt.K << " N=" << opt.N
+              << " repeats=" << opt.repeats << " transA=T transB=N\n";
+
+    MatmulBuffers buf{};
+    if (alloc_and_copy_single(opt, buf) != 0) {
+        std::cerr << "Allocation/memcpy failed in run_transpose_tiled\n";
+        free_buffers(buf);
+        return 1;
+    }
+
+    dim3 block(blocksize, blocksize);
+    const int tiles_m = (opt.M + blocksize - 1) / blocksize;
+    const int tiles_n = (opt.N + blocksize - 1) / blocksize;
+    dim3 grid(tiles_m * tiles_n);
+    const Transpose trans{OP_T, OP_N};
+
+    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+        transposeTilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f, 0.0f, trans);
+    });
+    std::cout << "avg_ms=" << avg_ms << "\n";
+
+    free_buffers(buf);
     return 0;
 }
 
@@ -119,30 +216,24 @@ int run_batch_naive(const Options& opt) {
     std::cout << "Running batch-naive: batch=" << opt.batch
               << " M=" << opt.M << " K=" << opt.K << " N=" << opt.N << "\n";
 
-    const size_t a_elems = static_cast<size_t>(opt.batch) * opt.M * opt.K;
-    const size_t b_elems = static_cast<size_t>(opt.batch) * opt.K * opt.N;
-    const size_t c_elems = static_cast<size_t>(opt.batch) * opt.M * opt.N;
-    const size_t a_bytes = a_elems * sizeof(float);
-    const size_t b_bytes = b_elems * sizeof(float);
-    const size_t c_bytes = c_elems * sizeof(float);
+    MatmulBuffers buf{};
+    if (alloc_and_copy_batched(opt, buf) != 0) {
+        std::cerr << "Allocation/memcpy failed in run_batch_naive\n";
+        free_buffers(buf);
+        return 1;
+    }
 
-    float* h_A = nullptr;
-    float* h_B = nullptr;
-    cudaMallocHost(&h_A, a_bytes);
-    cudaMallocHost(&h_B, b_bytes);
-    for (size_t i = 0; i < a_elems; ++i) h_A[i] = 1.0f;
-    for (size_t i = 0; i < b_elems; ++i) h_B[i] = 1.0f;
+    dim3 block(blocksize, blocksize);
+    const int tiles_m = (opt.M + blocksize - 1) / blocksize;
+    const int tiles_n = (opt.N + blocksize - 1) / blocksize;
+    dim3 grid(opt.batch, tiles_m * tiles_n);
 
-    float* d_A = nullptr;
-    float* d_B = nullptr;
-    float* d_C = nullptr;
-    cudaMalloc(&d_A, a_bytes);
-    cudaMalloc(&d_B, b_bytes);
-    cudaMalloc(&d_C, c_bytes);
-    cudaMemcpy(d_A, h_A, a_bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, h_B, b_bytes, cudaMemcpyHostToDevice);
-    // TODO: Compute dim3 block/grid (grid.x = batch, grid.y = tiles).
-    // TODO: Use time_kernel_ms around batchNaiveMul<<<...>>>(...)
+    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+        batchNaiveMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N);
+    });
+    std::cout << "avg_ms=" << avg_ms << "\n";
+
+    free_buffers(buf);
     return 0;
 }
 
@@ -150,29 +241,23 @@ int run_batch_tiled(const Options& opt) {
     std::cout << "Running batch-tiled: batch=" << opt.batch
               << " M=" << opt.M << " K=" << opt.K << " N=" << opt.N << "\n";
 
-    const size_t a_elems = static_cast<size_t>(opt.batch) * opt.M * opt.K;
-    const size_t b_elems = static_cast<size_t>(opt.batch) * opt.K * opt.N;
-    const size_t c_elems = static_cast<size_t>(opt.batch) * opt.M * opt.N;
-    const size_t a_bytes = a_elems * sizeof(float);
-    const size_t b_bytes = b_elems * sizeof(float);
-    const size_t c_bytes = c_elems * sizeof(float);
+    MatmulBuffers buf{};
+    if (alloc_and_copy_batched(opt, buf) != 0) {
+        std::cerr << "Allocation/memcpy failed in run_batch_tiled\n";
+        free_buffers(buf);
+        return 1;
+    }
 
-    float* h_A = nullptr;
-    float* h_B = nullptr;
-    cudaMallocHost(&h_A, a_bytes);
-    cudaMallocHost(&h_B, b_bytes);
-    for (size_t i = 0; i < a_elems; ++i) h_A[i] = 1.0f;
-    for (size_t i = 0; i < b_elems; ++i) h_B[i] = 1.0f;
+    dim3 block(blocksize, blocksize);
+    const int tiles_m = (opt.M + blocksize - 1) / blocksize;
+    const int tiles_n = (opt.N + blocksize - 1) / blocksize;
+    dim3 grid(opt.batch, tiles_m * tiles_n);
 
-    float* d_A = nullptr;
-    float* d_B = nullptr;
-    float* d_C = nullptr;
-    cudaMalloc(&d_A, a_bytes);
-    cudaMalloc(&d_B, b_bytes);
-    cudaMalloc(&d_C, c_bytes);
-    cudaMemcpy(d_A, h_A, a_bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, h_B, b_bytes, cudaMemcpyHostToDevice);
-    // TODO: Compute dim3 block/grid (grid.x = batch, grid.y = tiles).
-    // TODO: Use time_kernel_ms around batchTilingMul<<<...>>>(...)
+    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+        batchStridedMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f, 0.0f);
+    });
+    std::cout << "avg_ms=" << avg_ms << "\n";
+
+    free_buffers(buf);
     return 0;
 }
