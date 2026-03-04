@@ -2,44 +2,32 @@
 
 //matmul kernel
 // each thread exists within a block and we use math to turn 1D grid to a 2D grid index of that block
-__global__ void naiveMul(float* A, float* B, float* C, 
-        int M, int K, int N, 
-        float alpha, float beta) {
-
-    int numX_blocks = (N + blocksize - 1) / blocksize;
-
-    int blockRow = blockIdx.x / numX_blocks;
-    int blockCol = blockIdx.x % numX_blocks;
- 
-    int x = blockRow * blockDim.x + threadIdx.x;
-    int y = blockCol * blockDim.y + threadIdx.y;
-    if (x < M && y < N) {
+__global__ void naiveMul(const float* __restrict__ A, const float* __restrict__ B,
+        float* __restrict__ C,
+        int M, int K, int N,
+        float alpha) {
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < M && j < N) {
         float sum = 0;
         for (int k = 0; k < K; k += 1) {
-            sum += A[x * K + k] * B[k * N + y];
+            sum += A[i * K + k] * B[k * N + j];
         }
-        int idx = x * N + y;
-        if (beta == 0.0f) {
-            C[idx] = sum * (alpha);
-        } else {
-            C[idx] = sum * alpha + beta * C[idx];
-        }
+        int idx = i * N + j;
+        C[idx] = sum * alpha;
     }
 }
 //tiling kernel on a 1D grid
-__global__ void tilingMul(const float* A, const float* B, float* C, 
-        int M, int N, int K, 
-        float alpha, float beta) {
-            
-    int numTiles = (N + blocksize - 1)/ blocksize;
-    int blockRow = blockIdx.x / numTiles;
-    int blockCol = blockIdx.x % numTiles;
+__global__ void tilingMul(const float* __restrict__ A, const float* __restrict__ B,
+        float* __restrict__ C,
+        int M, int N, int K,
+        float alpha) {
 
     int r = threadIdx.y;
     int c = threadIdx.x;
 
-    int i = blockRow * blocksize + r;
-    int j = blockCol * blocksize + c; 
+    int i = blockIdx.y * blocksize + r;
+    int j = blockIdx.x * blocksize + c;
 
 
     __shared__ float A_block[blocksize][blocksize];
@@ -58,26 +46,20 @@ __global__ void tilingMul(const float* A, const float* B, float* C,
     }
     if (i < M && j < N) {
         int idx = i * N + j;
-        if (beta == 0.0f) {
-            C[idx] = sum * (alpha);
-        } else {
-            C[idx] = sum * alpha + beta * C[idx];
-        }
+        C[idx] = sum * alpha;
     }
 }
 
-__global__ void transposeTilingMul(const float* A, const float* B, float* C, 
-        int M, int N, int K, 
-        float alpha, float beta, Transpose trans) {
-    int numTiles = (N + blocksize - 1)/ blocksize;
-    int blockRow = blockIdx.x / numTiles;
-    int blockCol = blockIdx.x % numTiles;
+__global__ void transposeTilingMul(const float* __restrict__ A, const float* __restrict__ B,
+        float* __restrict__ C,
+        int M, int N, int K,
+        float alpha, Transpose trans) {
 
     int r = threadIdx.y;
     int c = threadIdx.x;
 
-    int i = blockRow * blocksize + r;
-    int j = blockCol * blocksize + c; 
+    int i = blockIdx.y * blocksize + r;
+    int j = blockIdx.x * blocksize + c;
 
 
     __shared__ float A_block[blocksize][blocksize];
@@ -96,26 +78,18 @@ __global__ void transposeTilingMul(const float* A, const float* B, float* C,
     }
     if (i < M && j < N) {
         int idx = i * N + j;
-        if (beta == 0.0f) {
-            C[idx] = sum * (alpha);
-        } else {
-            C[idx] = sum * alpha + beta * C[idx];
-        }
+        C[idx] = sum * alpha;
     }
 }
 //batched naive matMul kernel ()
-__global__ void batchNaiveMul(const float* A, const float* B, float* C, int M, int K, int N) {
+__global__ void batchNaiveMul(const float* __restrict__ A, const float* __restrict__ B,
+        float* __restrict__ C, int M, int K, int N) {
     //each thread takes care of C[b][i][j]
     int batch = blockIdx.x;
 
 
-    //blockIdx.y will have m * n blocks
-    int numTilesX = (N + blocksize - 1) / blocksize;
-    int row = (blockIdx.y / numTilesX);
-    int col = (blockIdx.y % numTilesX);
-
-    int i = (row * blockDim.y) + threadIdx.y;
-    int j = (col * blockDim.x) + threadIdx.x;
+    int i = (blockIdx.z * blockDim.y) + threadIdx.y;
+    int j = (blockIdx.y * blockDim.x) + threadIdx.x;
     
     if (i < M && j < N) {
         float sum = 0;
@@ -127,22 +101,18 @@ __global__ void batchNaiveMul(const float* A, const float* B, float* C, int M, i
 }
 
 
-__global__ void batchStridedMul(const float* A, const float* B, float* C, int M, int K, int N, float alpha, float beta) {
+__global__ void batchStridedMul(const float* __restrict__ A, const float* __restrict__ B,
+        float* __restrict__ C, int M, int K, int N, float alpha) {
     int batch = blockIdx.x;
 
     //C[b][i][j]
-
-    //which block we are in
-    int numTiles = (N + blocksize - 1) / blocksize;
-    int blockRow = blockIdx.y / numTiles;
-    int blockCol = blockIdx.y % numTiles;
 
 
     int r = threadIdx.y;
     int c = threadIdx.x;
 
-    int i = blockRow * blockDim.y + r;
-    int j = blockCol * blockDim.x + c;
+    int i = blockIdx.z * blockDim.y + r;
+    int j = blockIdx.y * blockDim.x + c;
 
     __shared__ float A_block[blocksize][blocksize];
     __shared__ float B_block[blocksize][blocksize];
@@ -165,11 +135,6 @@ __global__ void batchStridedMul(const float* A, const float* B, float* C, int M,
     }
     if (i < M && j < N) {
         int idx = i * N + j;
-        if (beta == 0.0f) {
-            Cb[idx] = sum * (alpha);
-        } else {
-            Cb[idx] = sum * alpha + beta * Cb[idx];
-        }
+        Cb[idx] = sum * alpha;
     }
 }
-

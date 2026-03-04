@@ -99,8 +99,8 @@ static bool test_naive(cublasHandle_t handle, std::mt19937& rng) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (M + blocksize - 1) / blocksize;
     const int tiles_n = (N + blocksize - 1) / blocksize;
-    dim3 grid(tiles_m * tiles_n);
-    naiveMul<<<grid, block>>>(d_A, d_B, d_C, M, K, N, 1.0f, 0.0f);
+    dim3 grid(tiles_n, tiles_m);
+    naiveMul<<<grid, block>>>(d_A, d_B, d_C, M, K, N, 1.0f);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -140,8 +140,8 @@ static bool test_tiled(cublasHandle_t handle, std::mt19937& rng) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (M + blocksize - 1) / blocksize;
     const int tiles_n = (N + blocksize - 1) / blocksize;
-    dim3 grid(tiles_m * tiles_n);
-    tilingMul<<<grid, block>>>(d_A, d_B, d_C, M, N, K, 1.0f, 0.0f);
+    dim3 grid(tiles_n, tiles_m);
+    tilingMul<<<grid, block>>>(d_A, d_B, d_C, M, N, K, 1.0f);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -181,9 +181,9 @@ static bool test_transpose_tiled(cublasHandle_t handle, std::mt19937& rng) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (M + blocksize - 1) / blocksize;
     const int tiles_n = (N + blocksize - 1) / blocksize;
-    dim3 grid(tiles_m * tiles_n);
+    dim3 grid(tiles_n, tiles_m);
     const Transpose t{OP_T, OP_N};
-    transposeTilingMul<<<grid, block>>>(d_A, d_B, d_C, M, N, K, 1.0f, 0.0f, t);
+    transposeTilingMul<<<grid, block>>>(d_A, d_B, d_C, M, N, K, 1.0f, t);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -223,7 +223,7 @@ static bool test_batch_naive(cublasHandle_t handle, std::mt19937& rng) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (M + blocksize - 1) / blocksize;
     const int tiles_n = (N + blocksize - 1) / blocksize;
-    dim3 grid(B, tiles_m * tiles_n);
+    dim3 grid(B, tiles_n, tiles_m);
     batchNaiveMul<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -271,8 +271,8 @@ static bool test_batch_tiled(cublasHandle_t handle, std::mt19937& rng) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (M + blocksize - 1) / blocksize;
     const int tiles_n = (N + blocksize - 1) / blocksize;
-    dim3 grid(B, tiles_m * tiles_n);
-    batchStridedMul<<<grid, block>>>(d_A, d_B, d_C, M, K, N, 1.0f, 0.0f);
+    dim3 grid(B, tiles_n, tiles_m);
+    batchStridedMul<<<grid, block>>>(d_A, d_B, d_C, M, K, N, 1.0f);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 

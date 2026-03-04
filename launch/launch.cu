@@ -150,10 +150,10 @@ int run_naive(const Options& opt) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (opt.M + blocksize - 1) / blocksize;
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
-    dim3 grid(tiles_m * tiles_n);
+    dim3 grid(tiles_n, tiles_m);
 
     float avg_ms = time_kernel_ms(opt.repeats, [&]() {
-        naiveMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f, 0.0f);
+        naiveMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f);
     });
     std::cout << "avg_ms=" << avg_ms << "\n";
 
@@ -175,10 +175,10 @@ int run_tiled(const Options& opt) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (opt.M + blocksize - 1) / blocksize;
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
-    dim3 grid(tiles_m * tiles_n);
+    dim3 grid(tiles_n, tiles_m);
 
     float avg_ms = time_kernel_ms(opt.repeats, [&]() {
-        tilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f, 0.0f);
+        tilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f);
     });
     std::cout << "avg_ms=" << avg_ms << "\n";
 
@@ -200,11 +200,11 @@ int run_transpose_tiled(const Options& opt) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (opt.M + blocksize - 1) / blocksize;
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
-    dim3 grid(tiles_m * tiles_n);
+    dim3 grid(tiles_n, tiles_m);
     const Transpose trans{OP_T, OP_N};
 
     float avg_ms = time_kernel_ms(opt.repeats, [&]() {
-        transposeTilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f, 0.0f, trans);
+        transposeTilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f, trans);
     });
     std::cout << "avg_ms=" << avg_ms << "\n";
 
@@ -226,7 +226,7 @@ int run_batch_naive(const Options& opt) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (opt.M + blocksize - 1) / blocksize;
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
-    dim3 grid(opt.batch, tiles_m * tiles_n);
+    dim3 grid(opt.batch, tiles_n, tiles_m);
 
     float avg_ms = time_kernel_ms(opt.repeats, [&]() {
         batchNaiveMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N);
@@ -251,10 +251,10 @@ int run_batch_tiled(const Options& opt) {
     dim3 block(blocksize, blocksize);
     const int tiles_m = (opt.M + blocksize - 1) / blocksize;
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
-    dim3 grid(opt.batch, tiles_m * tiles_n);
+    dim3 grid(opt.batch, tiles_n, tiles_m);
 
     float avg_ms = time_kernel_ms(opt.repeats, [&]() {
-        batchStridedMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f, 0.0f);
+        batchStridedMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f);
     });
     std::cout << "avg_ms=" << avg_ms << "\n";
 
