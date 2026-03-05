@@ -34,4 +34,4 @@ Testing/
 .DS_Store
 
 # Local study notes
-notes/flash_attention_kernel_notes.md
+kernels/flash_attention_kernel_notes.md
