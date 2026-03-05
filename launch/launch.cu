@@ -1,5 +1,5 @@
 #include "launch/launch.h"
-#include "kernels/kernels.cuh"
+#include "kernels/gemm-kernels.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -77,7 +77,7 @@ void print_usage(const char* prog) {
     std::cout
         << "Usage: " << prog << " [options]\n"
         << "Options:\n"
-        << "  --kernel naive|tiled|transpose-tiled|batch-naive|batch-tiled\n"
+        << "  --kernel naive|tiled|transpose-tiled|batch-naive|batch-tiled|flash-attn|rk4-heat3d\n"
         << "  --m <int>    rows of A / C\n"
         << "  --k <int>    cols of A / rows of B\n"
         << "  --n <int>    cols of B / C\n"
@@ -259,5 +259,17 @@ int run_batch_tiled(const Options& opt) {
     std::cout << "avg_ms=" << avg_ms << "\n";
 
     free_buffers(buf);
+    return 0;
+}
+
+int run_flash_attn(const Options& opt) {
+    (void)opt;
+    std::cout << "Kernel 'flash-attn' is reserved and not implemented yet.\n";
+    return 0;
+}
+
+int run_rk4_heat3d(const Options& opt) {
+    (void)opt;
+    std::cout << "Kernel 'rk4-heat3d' is reserved and not implemented yet.\n";
     return 0;
 }

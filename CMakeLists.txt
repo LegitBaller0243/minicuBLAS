@@ -15,7 +15,9 @@ endif()
 find_package(CUDAToolkit REQUIRED)
 
 add_library(cuda_kernels OBJECT
-  kernels/kernels.cu
+  kernels/gemm-kernels.cu
+  kernels/flash_attention.cu
+  kernels/rk4_heat3d.cu
 )
 
 target_include_directories(cuda_kernels
@@ -70,9 +72,29 @@ set_target_properties(kernels_correctness_vs_cublas PROPERTIES
   CUDA_ARCHITECTURES native
 )
 
+add_executable(bench
+  tests/bench.cu
+  $<TARGET_OBJECTS:cuda_kernels>
+)
+
+target_include_directories(bench
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(bench
+  PRIVATE
+    CUDA::cudart
+    CUDA::cublas
+)
+
+set_target_properties(bench PROPERTIES
+  CUDA_SEPARABLE_COMPILATION ON
+  CUDA_ARCHITECTURES native
+)
+
 include(CTest)
 if(BUILD_TESTING)
   add_test(NAME kernels_correctness_vs_cublas
            COMMAND kernels_correctness_vs_cublas)
 endif()
-

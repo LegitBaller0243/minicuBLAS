@@ -1,7 +1,7 @@
-#include "kernels.cuh"
+#include "gemm-kernels.cuh"
 
 //matmul kernel
-// each thread exists within a block and we use math to turn 1D grid to a 2D grid index of that block
+// each thread exists within a block 
 __global__ void naiveMul(const float* __restrict__ A, const float* __restrict__ B,
         float* __restrict__ C,
         int M, int K, int N,
@@ -101,7 +101,7 @@ __global__ void batchNaiveMul(const float* __restrict__ A, const float* __restri
 }
 
 
-__global__ void batchStridedMul(const float* __restrict__ A, const float* __restrict__ B,
+__global__ void batchTilingMul(const float* __restrict__ A, const float* __restrict__ B,
         float* __restrict__ C, int M, int K, int N, float alpha) {
     int batch = blockIdx.x;
 

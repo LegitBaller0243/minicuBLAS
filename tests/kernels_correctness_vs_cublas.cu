@@ -1,4 +1,4 @@
-#include "../kernels/kernels.cuh"
+#include "../kernels/gemm-kernels.cuh"
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>

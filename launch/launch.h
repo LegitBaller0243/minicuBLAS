@@ -18,3 +18,5 @@ int run_tiled(const Options& opt);
 int run_transpose_tiled(const Options& opt);
 int run_batch_naive(const Options& opt);
 int run_batch_tiled(const Options& opt);
+int run_flash_attn(const Options& opt);
+int run_rk4_heat3d(const Options& opt);
