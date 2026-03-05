@@ -32,3 +32,6 @@ Testing/
 .idea/
 .vscode/
 .DS_Store
+
+# Local study notes
+notes/flash_attention_kernel_notes.md
