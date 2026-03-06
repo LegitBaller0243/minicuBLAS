@@ -112,19 +112,39 @@ bool parse_args(int argc, char** argv, Options& opt) {
 }
 
 template <typename LaunchFn>
-static float time_kernel_ms(int repeats, LaunchFn launch) {
+static bool time_kernel_ms(int repeats, LaunchFn launch, float& avg_ms) {
+    avg_ms = 0.0f;
+    if (repeats <= 0) {
+        std::cerr << "Invalid repeats: " << repeats << "\n";
+        return false;
+    }
+
     cudaEvent_t start{}, stop{};
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
     // Warm-up (1 launch)
     launch();
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "Kernel launch failed during warm-up: " << cudaGetErrorString(err) << "\n";
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
+        return false;
+    }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 
     cudaEventRecord(start);
     for (int i = 0; i < repeats; ++i) {
         launch();
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            std::cerr << "Kernel launch failed during timed run: " << cudaGetErrorString(err) << "\n";
+            cudaEventDestroy(start);
+            cudaEventDestroy(stop);
+            return false;
+        }
     }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -133,7 +153,8 @@ static float time_kernel_ms(int repeats, LaunchFn launch) {
     cudaEventElapsedTime(&ms, start, stop);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    return ms / repeats;
+    avg_ms = ms / repeats;
+    return true;
 }
 
 int run_naive(const Options& opt) {
@@ -152,9 +173,14 @@ int run_naive(const Options& opt) {
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
     dim3 grid(tiles_n, tiles_m);
 
-    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+    float avg_ms = 0.0f;
+    if (!time_kernel_ms(opt.repeats, [&]() {
         naiveMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f);
-    });
+    }, avg_ms)) {
+        std::cerr << "Timing failed in run_naive\n";
+        free_buffers(buf);
+        return 1;
+    }
     std::cout << "avg_ms=" << avg_ms << "\n";
 
     free_buffers(buf);
@@ -177,9 +203,14 @@ int run_tiled(const Options& opt) {
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
     dim3 grid(tiles_n, tiles_m);
 
-    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+    float avg_ms = 0.0f;
+    if (!time_kernel_ms(opt.repeats, [&]() {
         tilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f);
-    });
+    }, avg_ms)) {
+        std::cerr << "Timing failed in run_tiled\n";
+        free_buffers(buf);
+        return 1;
+    }
     std::cout << "avg_ms=" << avg_ms << "\n";
 
     free_buffers(buf);
@@ -203,9 +234,14 @@ int run_transpose_tiled(const Options& opt) {
     dim3 grid(tiles_n, tiles_m);
     const Transpose trans{OP_T, OP_N};
 
-    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+    float avg_ms = 0.0f;
+    if (!time_kernel_ms(opt.repeats, [&]() {
         transposeTilingMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.N, opt.K, 1.0f, trans);
-    });
+    }, avg_ms)) {
+        std::cerr << "Timing failed in run_transpose_tiled\n";
+        free_buffers(buf);
+        return 1;
+    }
     std::cout << "avg_ms=" << avg_ms << "\n";
 
     free_buffers(buf);
@@ -228,9 +264,14 @@ int run_batch_naive(const Options& opt) {
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
     dim3 grid(opt.batch, tiles_n, tiles_m);
 
-    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+    float avg_ms = 0.0f;
+    if (!time_kernel_ms(opt.repeats, [&]() {
         batchNaiveMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N);
-    });
+    }, avg_ms)) {
+        std::cerr << "Timing failed in run_batch_naive\n";
+        free_buffers(buf);
+        return 1;
+    }
     std::cout << "avg_ms=" << avg_ms << "\n";
 
     free_buffers(buf);
@@ -253,9 +294,14 @@ int run_batch_tiled(const Options& opt) {
     const int tiles_n = (opt.N + blocksize - 1) / blocksize;
     dim3 grid(opt.batch, tiles_n, tiles_m);
 
-    float avg_ms = time_kernel_ms(opt.repeats, [&]() {
+    float avg_ms = 0.0f;
+    if (!time_kernel_ms(opt.repeats, [&]() {
         batchStridedMul<<<grid, block>>>(buf.d_A, buf.d_B, buf.d_C, opt.M, opt.K, opt.N, 1.0f);
-    });
+    }, avg_ms)) {
+        std::cerr << "Timing failed in run_batch_tiled\n";
+        free_buffers(buf);
+        return 1;
+    }
     std::cout << "avg_ms=" << avg_ms << "\n";
 
     free_buffers(buf);

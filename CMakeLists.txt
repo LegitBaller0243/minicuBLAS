@@ -97,4 +97,16 @@ include(CTest)
 if(BUILD_TESTING)
   add_test(NAME kernels_correctness_vs_cublas
            COMMAND kernels_correctness_vs_cublas)
+
+  # GEMM launch smoke tests through the CLI runtime path.
+  add_test(NAME launch_gemm_naive
+           COMMAND cuda_practice --kernel naive --m 128 --k 128 --n 128 --repeats 2)
+  add_test(NAME launch_gemm_tiled
+           COMMAND cuda_practice --kernel tiled --m 128 --k 128 --n 128 --repeats 2)
+  add_test(NAME launch_gemm_transpose_tiled
+           COMMAND cuda_practice --kernel transpose-tiled --m 128 --k 128 --n 128 --repeats 2)
+  add_test(NAME launch_gemm_batch_naive
+           COMMAND cuda_practice --kernel batch-naive --batch 8 --m 64 --k 64 --n 64 --repeats 2)
+  add_test(NAME launch_gemm_batch_tiled
+           COMMAND cuda_practice --kernel batch-tiled --batch 8 --m 64 --k 64 --n 64 --repeats 2)
 endif()

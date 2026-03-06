@@ -18,7 +18,7 @@ __global__ void naiveMul(const float* __restrict__ A, const float* __restrict__ 
     }
 }
 //tiling kernel on a 1D grid
-__global__ void sharedTilingMul(const float* __restrict__ A, const float* __restrict__ B,
+__global__ void tilingMul(const float* __restrict__ A, const float* __restrict__ B,
         float* __restrict__ C,
         int M, int N, int K,
         float alpha) {
@@ -186,7 +186,7 @@ __global__ void batchNaiveMul(const float* __restrict__ A, const float* __restri
 }
 
 
-__global__ void batchTilingMul(const float* __restrict__ A, const float* __restrict__ B,
+__global__ void batchStridedMul(const float* __restrict__ A, const float* __restrict__ B,
         float* __restrict__ C, int M, int K, int N, float alpha) {
     int batch = blockIdx.x;
 

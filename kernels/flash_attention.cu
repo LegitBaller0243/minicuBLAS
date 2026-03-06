@@ -1,6 +1,7 @@
 #include "kernels/flash_attention.cuh"
 
 #include <math.h>
+#include <math_constants.h>
 
 template <int BLOCK_R, int BLOCK_C, int D_TILE>
 __global__ void flashAttnCausalForwardKernel(const float* __restrict__ Q,
@@ -13,8 +14,6 @@ __global__ void flashAttnCausalForwardKernel(const float* __restrict__ Q,
     //   block = dim3(BLOCK_C, BLOCK_R)
     //   grid  = dim3(ceil_div(S, BLOCK_R), H, B)
     // Mapping: blockIdx.x -> query tile, blockIdx.y -> head, blockIdx.z -> batch.
-    (void)causal;  // Intentionally non-causal path for now.
-
     const int x = threadIdx.x;
     const int y = threadIdx.y;
     const int q_tile = blockIdx.x;
@@ -69,7 +68,9 @@ __global__ void flashAttnCausalForwardKernel(const float* __restrict__ Q,
             __syncthreads();
         }
 
-        score_tile[y][x] = (q_row < S && kv_row < S) ? (score * scale) : -CUDART_INF_F;
+        const bool in_bounds = (q_row < S && kv_row < S);
+        const bool causal_ok = (!causal) || (q_row >= kv_row);
+        score_tile[y][x] = (in_bounds && causal_ok) ? (score * scale) : -CUDART_INF_F;
         __syncthreads();
 
         if (x == 0) {

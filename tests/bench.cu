@@ -322,7 +322,7 @@ static bool parse_args(int argc, char** argv, Config& cfg) {
 }
 
 static void print_usage(const char* prog) {
-    std::cout << "Usage: " << prog << " [--kernel all|naive|tiled|batch-naive|batch-tiled]"
+    std::cout << "Usage: " << prog << " [--kernel all|naive|tiled|reg-shared|batch-naive|batch-tiled]"
               << " [--repeats N] [--warmup N] [--batch N]\n";
 }
 
@@ -363,6 +363,13 @@ int main(int argc, char** argv) {
                int N) { tilingMul<<<grid, block>>>(d_A, d_B, d_C, M, N, K, 1.0f); });
     }
 
+    if (run_all || cfg.kernel == "reg-shared") {
+        ok &= run_single_suite(
+            "regSharedTilingMul", sizes, cfg,
+            [](dim3 grid, dim3 block, float* d_A, float* d_B, float* d_C, int M, int K,
+               int N) { regSharedTilingMul<<<grid, block>>>(d_A, d_B, d_C, M, N, K, 1.0f); });
+    }
+
     if (run_all || cfg.kernel == "batch-naive") {
         ok &= run_batched_suite(
             "batchNaiveMul", sizes, cfg,
@@ -381,7 +388,7 @@ int main(int argc, char** argv) {
 
     if (!ok) return 1;
     if (!run_all && cfg.kernel != "naive" && cfg.kernel != "tiled" && cfg.kernel != "batch-naive" &&
-        cfg.kernel != "batch-tiled") {
+        cfg.kernel != "batch-tiled" && cfg.kernel != "reg-shared") {
         std::cerr << "Unsupported --kernel value: " << cfg.kernel << "\n";
         print_usage(argv[0]);
         return 1;
