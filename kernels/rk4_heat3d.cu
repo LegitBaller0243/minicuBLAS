@@ -1,13 +1,17 @@
 #include "kernels/rk4_heat3d.cuh"
-#include <cooperative_groups.h>
-
-namespace cg = cooperative_groups;
 
 __device__ __constant__ float C0 = -201.0f / 72.0f;
 __device__ __constant__ float C1 = 8.0f / 5.0f;
 __device__ __constant__ float C2 = -1.0f / 5.0f;
 __device__ __constant__ float C3 = 8.0f / 315.0f;
 __device__ __constant__ float C4 = -1.0f / 560.0f;
+
+__device__ __forceinline__ bool isInterior(int i, int j, int k,
+                                            int nx, int ny, int nz) {
+    return (i >= 4 && i < nx - 4 &&
+            j >= 4 && j < ny - 4 &&
+            k >= 4 && k < nz - 4);
+}
 
 __device__ __forceinline__ float laplacian25_uniform_h(
     const float* __restrict__ u,
@@ -34,72 +38,114 @@ __device__ __forceinline__ float laplacian25_uniform_h(
     return sum * inv_h2;
 }
 
-__global__ void rk4Heat3DStepKernel(
-    const float* __restrict__ u,
-    float* __restrict__ u_next,
-    float* __restrict__ k1,
-    float* __restrict__ k2,
-    float* __restrict__ k3,
-    float* __restrict__ k4,
-    float* __restrict__ u_stage1,
-    float* __restrict__ u_stage2,
-    int nx, int ny, int nz,
-    float alpha, float dt, float inv_h2, float boundary_value) {
-
-    cg::grid_group grid = cg::this_grid();
-
+__global__ void applyBoundaryKernel(float* __restrict__ field,
+                                    int nx, int ny, int nz,
+                                    float boundary_value) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
-
-    const bool in_bounds = (i < nx && j < ny && k < nz);
-    const int idx = in_bounds ? (i + j * nx + k * nx * ny) : 0;
-
-    const bool interior = in_bounds &&
-                          (i >= 4 && i < nx - 4 &&
-                           j >= 4 && j < ny - 4 &&
-                           k >= 4 && k < nz - 4);
-
-    if (in_bounds) {
-        k1[idx] = interior ? alpha * laplacian25_uniform_h(u, i, j, k, nx, ny, nz, inv_h2) : 0.0f;
+    if (i >= nx || j >= ny || k >= nz) {
+        return;
     }
-    grid.sync();
 
-    if (in_bounds) {
-        u_stage1[idx] = interior ? (u[idx] + 0.5f * dt * k1[idx]) : boundary_value;
+    if (!isInterior(i, j, k, nx, ny, nz)) {
+        const int idx = i + j * nx + k * nx * ny;
+        field[idx] = boundary_value;
     }
-    grid.sync();
+}
 
-    if (in_bounds) {
-        k2[idx] = interior ? alpha * laplacian25_uniform_h(u_stage1, i, j, k, nx, ny, nz, inv_h2) : 0.0f;
+__global__ void buildStageInteriorKernel(const float* __restrict__ u,
+                                         const float* __restrict__ k,
+                                         float* __restrict__ u_stage,
+                                         float cdt,
+                                         int nx, int ny, int nz) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k_idx = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k_idx >= nz) {
+        return;
     }
-    grid.sync();
+    if (!isInterior(i, j, k_idx, nx, ny, nz)) {
+        return;
+    }
 
-    if (in_bounds) {
-        u_stage2[idx] = interior ? (u[idx] + 0.5f * dt * k2[idx]) : boundary_value;
-    }
-    grid.sync();
+    const int idx = i + j * nx + k_idx * nx * ny;
+    u_stage[idx] = u[idx] + cdt * k[idx];
+}
 
-    if (in_bounds) {
-        k3[idx] = interior ? alpha * laplacian25_uniform_h(u_stage2, i, j, k, nx, ny, nz, inv_h2) : 0.0f;
+__global__ void laplacianInteriorKernel(const float* __restrict__ in,
+                                        float* __restrict__ out,
+                                        int nx, int ny, int nz,
+                                        float alpha, float inv_h2) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) {
+        return;
     }
-    grid.sync();
+    if (!isInterior(i, j, k, nx, ny, nz)) {
+        return;
+    }
 
-    if (in_bounds) {
-        u_stage1[idx] = interior ? (u[idx] + dt * k3[idx]) : boundary_value;
-    }
-    grid.sync();
+    const int idx = i + j * nx + k * nx * ny;
+    out[idx] = alpha * laplacian25_uniform_h(in, i, j, k, nx, ny, nz, inv_h2);
+}
 
-    if (in_bounds) {
-        k4[idx] = interior ? alpha * laplacian25_uniform_h(u_stage1, i, j, k, nx, ny, nz, inv_h2) : 0.0f;
+__global__ void finalCombineInteriorKernel(const float* __restrict__ u,
+                                           const float* __restrict__ k1,
+                                           const float* __restrict__ k2,
+                                           const float* __restrict__ k3,
+                                           const float* __restrict__ k4,
+                                           float* __restrict__ u_next,
+                                           int nx, int ny, int nz,
+                                           float dt) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) {
+        return;
     }
-    grid.sync();
+    if (!isInterior(i, j, k, nx, ny, nz)) {
+        return;
+    }
 
-    if (in_bounds) {
-        if (interior) {
-            u_next[idx] = u[idx] + (dt / 6.0f) * (k1[idx] + 2.0f * k2[idx] + 2.0f * k3[idx] + k4[idx]);
-        } else {
-            u_next[idx] = boundary_value;
-        }
-    }
+    const int idx = i + j * nx + k * nx * ny;
+    u_next[idx] = u[idx] + (dt / 6.0f) * (k1[idx] + 2.0f * k2[idx] + 2.0f * k3[idx] + k4[idx]);
+}
+
+void launchRK4Heat3DStepStaged(const float* u,
+                               float* u_next,
+                               float* k1,
+                               float* k2,
+                               float* k3,
+                               float* k4,
+                               float* u_stage,
+                               int nx, int ny, int nz,
+                               float alpha, float dt, float inv_h2,
+                               float boundary_value,
+                               cudaStream_t stream) {
+    const dim3 block(8, 8, 8);
+    const dim3 grid((nx + block.x - 1) / block.x,
+                    (ny + block.y - 1) / block.y,
+                    (nz + block.z - 1) / block.z);
+
+    laplacianInteriorKernel<<<grid, block, 0, stream>>>(u, k1, nx, ny, nz, alpha, inv_h2);
+
+    buildStageInteriorKernel<<<grid, block, 0, stream>>>(u, k1, u_stage, 0.5f * dt, nx, ny, nz);
+    applyBoundaryKernel<<<grid, block, 0, stream>>>(u_stage, nx, ny, nz, boundary_value);
+
+    laplacianInteriorKernel<<<grid, block, 0, stream>>>(u_stage, k2, nx, ny, nz, alpha, inv_h2);
+
+    buildStageInteriorKernel<<<grid, block, 0, stream>>>(u, k2, u_stage, 0.5f * dt, nx, ny, nz);
+    applyBoundaryKernel<<<grid, block, 0, stream>>>(u_stage, nx, ny, nz, boundary_value);
+
+    laplacianInteriorKernel<<<grid, block, 0, stream>>>(u_stage, k3, nx, ny, nz, alpha, inv_h2);
+
+    buildStageInteriorKernel<<<grid, block, 0, stream>>>(u, k3, u_stage, dt, nx, ny, nz);
+    applyBoundaryKernel<<<grid, block, 0, stream>>>(u_stage, nx, ny, nz, boundary_value);
+
+    laplacianInteriorKernel<<<grid, block, 0, stream>>>(u_stage, k4, nx, ny, nz, alpha, inv_h2);
+
+    finalCombineInteriorKernel<<<grid, block, 0, stream>>>(u, k1, k2, k3, k4, u_next, nx, ny, nz, dt);
+    applyBoundaryKernel<<<grid, block, 0, stream>>>(u_next, nx, ny, nz, boundary_value);
 }
