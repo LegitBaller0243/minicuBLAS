@@ -1,8 +1,11 @@
 #include "launch/launch.h"
+#include "kernels/flash_attention.cuh"
 #include "kernels/gemm-kernels.cuh"
+#include "kernels/rk4_heat3d.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -83,6 +86,8 @@ void print_usage(const char* prog) {
         << "  --n <int>    cols of B / C\n"
         << "  --batch <int> batch size for batched kernels\n"
         << "  --repeats <int> number of timed launches\n"
+        << "Flash-attn mapping: B=batch H=n S=m D=k\n"
+        << "RK4 mapping: nx=m ny=k nz=n\n"
         << "  -h, --help   show this help\n";
 }
 
@@ -309,13 +314,170 @@ int run_batch_tiled(const Options& opt) {
 }
 
 int run_flash_attn(const Options& opt) {
-    (void)opt;
-    std::cout << "Kernel 'flash-attn' is reserved and not implemented yet.\n";
+    const int B = opt.batch;
+    const int H = opt.N;
+    const int S = opt.M;
+    const int D = opt.K;
+    if (B <= 0 || H <= 0 || S <= 0 || D <= 0) {
+        std::cerr << "Invalid flash-attn shape: B=" << B << " H=" << H << " S=" << S << " D=" << D << "\n";
+        return 1;
+    }
+
+    std::cout << "Running flash-attn: B=" << B << " H=" << H << " S=" << S << " D=" << D
+              << " repeats=" << opt.repeats << " causal=1\n";
+
+    const size_t qkv_elems = static_cast<size_t>(B) * H * S * D;
+    const size_t qkv_bytes = qkv_elems * sizeof(float);
+    const size_t o_bytes = qkv_bytes;
+
+    float *d_Q = nullptr, *d_K = nullptr, *d_V = nullptr, *d_O = nullptr;
+    const auto free_flash = [&]() {
+        if (d_Q) cudaFree(d_Q);
+        if (d_K) cudaFree(d_K);
+        if (d_V) cudaFree(d_V);
+        if (d_O) cudaFree(d_O);
+    };
+    if (cudaMalloc(&d_Q, qkv_bytes) != cudaSuccess) return 1;
+    if (cudaMalloc(&d_K, qkv_bytes) != cudaSuccess) {
+        free_flash();
+        return 1;
+    }
+    if (cudaMalloc(&d_V, qkv_bytes) != cudaSuccess) {
+        free_flash();
+        return 1;
+    }
+    if (cudaMalloc(&d_O, o_bytes) != cudaSuccess) {
+        free_flash();
+        return 1;
+    }
+    if (cudaMemset(d_Q, 0, qkv_bytes) != cudaSuccess) {
+        free_flash();
+        return 1;
+    }
+    if (cudaMemset(d_K, 0, qkv_bytes) != cudaSuccess) {
+        free_flash();
+        return 1;
+    }
+    if (cudaMemset(d_V, 0, qkv_bytes) != cudaSuccess) {
+        free_flash();
+        return 1;
+    }
+    if (cudaMemset(d_O, 0, o_bytes) != cudaSuccess) {
+        free_flash();
+        return 1;
+    }
+
+    const float scale = 1.0f / std::sqrt(static_cast<float>(D));
+    float avg_ms = 0.0f;
+    if (!time_kernel_ms(opt.repeats, [&]() {
+        launchFlashAttnCausalForwardKernel(d_Q, d_K, d_V, d_O, B, H, S, D, scale, true);
+    }, avg_ms)) {
+        std::cerr << "Timing failed in run_flash_attn\n";
+        free_flash();
+        return 1;
+    }
+    std::cout << "avg_ms=" << avg_ms << "\n";
+
+    free_flash();
     return 0;
 }
 
 int run_rk4_heat3d(const Options& opt) {
-    (void)opt;
-    std::cout << "Kernel 'rk4-heat3d' is reserved and not implemented yet.\n";
+    const int nx = opt.M;
+    const int ny = opt.K;
+    const int nz = opt.N;
+    if (nx <= 0 || ny <= 0 || nz <= 0) {
+        std::cerr << "Invalid rk4 grid: nx=" << nx << " ny=" << ny << " nz=" << nz << "\n";
+        return 1;
+    }
+
+    std::cout << "Running rk4-heat3d: nx=" << nx << " ny=" << ny << " nz=" << nz
+              << " repeats=" << opt.repeats << "\n";
+
+    const size_t elems = static_cast<size_t>(nx) * ny * nz;
+    const size_t bytes = elems * sizeof(float);
+
+    float *u = nullptr, *u_next = nullptr, *k1 = nullptr, *k2 = nullptr, *k3 = nullptr, *k4 = nullptr, *u_stage = nullptr;
+    const auto free_rk4 = [&]() {
+        if (u) cudaFree(u);
+        if (u_next) cudaFree(u_next);
+        if (k1) cudaFree(k1);
+        if (k2) cudaFree(k2);
+        if (k3) cudaFree(k3);
+        if (k4) cudaFree(k4);
+        if (u_stage) cudaFree(u_stage);
+    };
+    if (cudaMalloc(&u, bytes) != cudaSuccess) return 1;
+    if (cudaMalloc(&u_next, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMalloc(&k1, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMalloc(&k2, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMalloc(&k3, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMalloc(&k4, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMalloc(&u_stage, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMemset(u, 0, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMemset(u_next, 0, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMemset(k1, 0, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMemset(k2, 0, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMemset(k3, 0, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMemset(k4, 0, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+    if (cudaMemset(u_stage, 0, bytes) != cudaSuccess) {
+        free_rk4();
+        return 1;
+    }
+
+    constexpr float alpha = 1.0f;
+    constexpr float dt = 0.1f;
+    constexpr float h = 1.0f;
+    constexpr float boundary_value = 0.0f;
+    const float inv_h2 = 1.0f / (h * h);
+
+    float avg_ms = 0.0f;
+    if (!time_kernel_ms(opt.repeats, [&]() {
+        launchRK4Heat3DStepStaged(u, u_next, k1, k2, k3, k4, u_stage,
+                                  nx, ny, nz, alpha, dt, inv_h2, boundary_value);
+    }, avg_ms)) {
+        std::cerr << "Timing failed in run_rk4_heat3d\n";
+        free_rk4();
+        return 1;
+    }
+    std::cout << "avg_ms=" << avg_ms << "\n";
+
+    free_rk4();
     return 0;
 }
